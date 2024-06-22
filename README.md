@@ -2,8 +2,9 @@
 
 This is a Ktor client engine that uses Cronet as the underlying HTTP client.
 
-Implementation is simplified and not tested in production.
+Implementation is simplified and **not** tested in production.
 Use at your own risk.
+Inspired by [cronet-engine](https://github.com/niusounds/cronet-engine)
 
 See example usage in [NetworkFactory.kt](app/src/main/java/com/github/ruggedbl/ktor/client/cronet/NetworkFactory.kt).
 
