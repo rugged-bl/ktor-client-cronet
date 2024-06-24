@@ -135,7 +135,7 @@ class CronetEngine(
             }
 
             data.body.contentType?.let {
-                addHeader(HttpHeaders.ContentType, it.contentType)
+                addHeader(HttpHeaders.ContentType, "${it.contentType}/${it.contentSubtype}")
             }
         }.build()
 

@@ -5,6 +5,7 @@ import android.util.Log
 import androidx.annotation.OptIn
 import io.ktor.client.HttpClient
 import io.ktor.client.HttpClientConfig
+import io.ktor.client.call.body
 import io.ktor.client.engine.HttpClientEngineConfig
 import io.ktor.client.engine.HttpClientEngineFactory
 import io.ktor.client.plugins.contentnegotiation.ContentNegotiation
@@ -13,7 +14,11 @@ import io.ktor.client.plugins.logging.Logger
 import io.ktor.client.plugins.logging.Logging
 import io.ktor.client.plugins.logging.MessageLengthLimitingLogger
 import io.ktor.client.request.get
+import io.ktor.client.request.post
+import io.ktor.client.request.setBody
 import io.ktor.client.statement.readBytes
+import io.ktor.http.ContentType
+import io.ktor.http.contentType
 import io.ktor.serialization.kotlinx.json.json
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.GlobalScope
@@ -32,14 +37,14 @@ class NetworkFactory {
             val a = client.get("https://quic.nginx.org/test")
             a.readBytes()
             delay(100)
-            val b = client.get("https://quic.nginx.org/test")
-            b.readBytes()
-            delay(100)
             val c = client.get("https://www.google.com/favicon.ico")
             c.readBytes()
-            delay(100)
-            val d = client.get("https://www.google.com/favicon.ico")
-            d.readBytes()
+
+            val postResponse = client.post("https://jsonplaceholder.typicode.com/posts") {
+                contentType(ContentType.Application.Json)
+                setBody(PostRequest("foo", "bar", 1))
+            }.body<PostResponse>()
+            Log.d("Ktor", "Post response: $postResponse")
         }
     }
 
