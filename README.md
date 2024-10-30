@@ -1,6 +1,6 @@
 # ktor-client-cronet
 
-This is a Ktor client engine that uses Cronet as the underlying HTTP client.
+This is a Ktor 3 client engine that uses Cronet as the underlying HTTP client.
 
 Implementation is simplified and **not** tested in production.
 Use at your own risk.

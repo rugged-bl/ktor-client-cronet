@@ -16,6 +16,7 @@ import io.ktor.client.plugins.logging.MessageLengthLimitingLogger
 import io.ktor.client.request.get
 import io.ktor.client.request.post
 import io.ktor.client.request.setBody
+import io.ktor.client.statement.bodyAsBytes
 import io.ktor.client.statement.readBytes
 import io.ktor.http.ContentType
 import io.ktor.http.contentType
@@ -35,10 +36,21 @@ class NetworkFactory {
         GlobalScope.launch(Dispatchers.IO) {
             val client = NetworkFactory().createHttpClient(context)
             val a = client.get("https://quic.nginx.org/test")
-            a.readBytes()
+            a.bodyAsBytes()
+
             delay(100)
+
+            try {
+                val b = client.get("https://quic.nginx.orgg/test")
+                b.bodyAsBytes()
+            } catch (e: Exception) {
+                Log.e("Ktor", "Request failed", e)
+            }
+
+            delay(100)
+
             val c = client.get("https://www.google.com/favicon.ico")
-            c.readBytes()
+            c.bodyAsBytes()
 
             val postResponse = client.post("https://jsonplaceholder.typicode.com/posts") {
                 contentType(ContentType.Application.Json)
@@ -85,7 +97,6 @@ class NetworkFactory {
             engine {
                 this.pipelining = true
                 this.followRedirects = false
-                this.threadsCount = 24
             }
         }
     }
@@ -96,6 +107,8 @@ class NetworkFactory {
     ): HttpClient {
         return HttpClient(httpClientEngine) {
             block.invoke(this)
+
+            expectSuccess = true
 
             followRedirects = false
 

@@ -1,10 +1,10 @@
 package com.github.ruggedbl.ktor.client.cronet
 
-import android.util.Log
 import io.ktor.client.engine.HttpClientEngineBase
 import io.ktor.client.engine.HttpClientEngineCapability
 import io.ktor.client.engine.callContext
-import io.ktor.client.plugins.HttpTimeout
+import io.ktor.client.network.sockets.ConnectTimeoutException
+import io.ktor.client.plugins.HttpTimeoutCapability
 import io.ktor.client.request.HttpRequestData
 import io.ktor.client.request.HttpResponseData
 import io.ktor.http.Headers
@@ -12,14 +12,17 @@ import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpProtocolVersion
 import io.ktor.http.HttpStatusCode
 import io.ktor.http.content.OutgoingContent
-import io.ktor.util.InternalAPI
 import io.ktor.util.date.GMTDate
 import io.ktor.util.flattenForEach
 import io.ktor.utils.io.ByteReadChannel
-import kotlinx.coroutines.CoroutineDispatcher
+import io.ktor.utils.io.InternalAPI
+import io.ktor.utils.io.toByteArray
+import io.ktor.utils.io.writer
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.asExecutor
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.suspendCancellableCoroutine
 import org.chromium.net.CronetException
 import org.chromium.net.UploadDataProvider
@@ -27,6 +30,7 @@ import org.chromium.net.UrlRequest
 import org.chromium.net.UrlResponseInfo
 import org.chromium.net.apihelpers.UploadDataProviders
 import java.io.ByteArrayOutputStream
+import java.io.IOException
 import java.nio.ByteBuffer
 import java.nio.channels.Channels
 import kotlin.coroutines.CoroutineContext
@@ -37,12 +41,9 @@ class CronetEngine(
     override val config: CronetConfig,
 ) : HttpClientEngineBase("ktor-cronet") {
 
-    override val supportedCapabilities: Set<HttpClientEngineCapability<*>> = hashSetOf(HttpTimeout)
+    override val supportedCapabilities = hashSetOf(HttpTimeoutCapability)
 
     private val cronetEngine = config.preconfigured
-
-    @OptIn(ExperimentalCoroutinesApi::class)
-    override val dispatcher: CoroutineDispatcher = Dispatchers.IO.limitedParallelism(config.threadsCount)
 
     private val executor by lazy { dispatcher.asExecutor() }
 
@@ -56,93 +57,101 @@ class CronetEngine(
     private suspend fun executeHttpRequest(
         callContext: CoroutineContext,
         data: HttpRequestData
-    ): HttpResponseData = suspendCancellableCoroutine { continuation ->
+    ): HttpResponseData {
         val requestTime = GMTDate()
 
         // All chunked response is written to this.
         val responseCache = ByteArrayOutputStream()
         val receiveChannel = Channels.newChannel(responseCache)
 
-        val callback = object : UrlRequest.Callback() {
-            override fun onRedirectReceived(
-                request: UrlRequest,
-                info: UrlResponseInfo,
-                newLocationUrl: String
-            ) {
-                if (config.followRedirects) {
-                    request.followRedirect()
-                } else {
-                    request.cancel()
+        val uploadDataProvider = data.body.toUploadDataProvider()
+
+        return suspendCancellableCoroutine { continuation ->
+            val callback = object : UrlRequest.Callback() {
+                override fun onRedirectReceived(
+                    request: UrlRequest,
+                    info: UrlResponseInfo,
+                    newLocationUrl: String
+                ) {
+                    if (config.followRedirects) {
+                        request.followRedirect()
+                    } else {
+                        request.cancel()
+                        continuation.resume(
+                            info.toHttpResponseData(
+                                requestTime = requestTime,
+                                callContext = callContext,
+                            )
+                        )
+                    }
+                }
+
+                override fun onResponseStarted(request: UrlRequest, info: UrlResponseInfo) {
+                    request.read(ByteBuffer.allocateDirect(config.responseBufferSize))
+                }
+
+                override fun onReadCompleted(
+                    request: UrlRequest,
+                    info: UrlResponseInfo,
+                    byteBuffer: ByteBuffer
+                ) {
+                    // Write current received response data to responseCache
+                    byteBuffer.flip()
+                    receiveChannel.write(byteBuffer)
+
+                    // Continue reading
+                    byteBuffer.clear()
+                    request.read(byteBuffer)
+                }
+
+                override fun onSucceeded(request: UrlRequest, info: UrlResponseInfo) {
                     continuation.resume(
                         info.toHttpResponseData(
                             requestTime = requestTime,
                             callContext = callContext,
+                            responseBody = responseCache.toByteArray(),
                         )
                     )
                 }
+
+                override fun onFailed(
+                    request: UrlRequest,
+                    info: UrlResponseInfo?,
+                    error: CronetException
+                ) {
+                    continuation.resumeWithException(error)
+                }
+
+                override fun onCanceled(request: UrlRequest, info: UrlResponseInfo?) {
+                    continuation.resumeWithException(CancellationException("Request was cancelled"))
+                }
             }
 
-            override fun onResponseStarted(request: UrlRequest, info: UrlResponseInfo) {
-                request.read(ByteBuffer.allocateDirect(config.responseBufferSize))
+            val request = cronetEngine.newUrlRequestBuilder(
+                /* url = */ data.url.toString(),
+                /* callback = */ callback,
+                /* executor = */ executor,
+            ).apply {
+                setHttpMethod(data.method.value)
+
+                data.headers.flattenForEach { key, value ->
+                    addHeader(key, value)
+                }
+
+                uploadDataProvider?.let {
+                    setUploadDataProvider(it, executor)
+                }
+
+                data.body.contentType?.let {
+                    addHeader(HttpHeaders.ContentType, "${it.contentType}/${it.contentSubtype}")
+                }
+            }.build()
+
+            continuation.invokeOnCancellation {
+                request.cancel()
             }
 
-            override fun onReadCompleted(
-                request: UrlRequest,
-                info: UrlResponseInfo,
-                byteBuffer: ByteBuffer
-            ) {
-                // Write current received response data to responseCache
-                byteBuffer.flip()
-                receiveChannel.write(byteBuffer)
-
-                // Continue reading
-                byteBuffer.clear()
-                request.read(byteBuffer)
-            }
-
-            override fun onSucceeded(request: UrlRequest, info: UrlResponseInfo) {
-                continuation.resume(
-                    info.toHttpResponseData(
-                        requestTime = requestTime,
-                        callContext = callContext,
-                        responseBody = responseCache.toByteArray(),
-                    )
-                )
-            }
-
-            override fun onFailed(
-                request: UrlRequest,
-                info: UrlResponseInfo,
-                error: CronetException
-            ) {
-                continuation.resumeWithException(error)
-            }
-        }
-
-        val request = cronetEngine.newUrlRequestBuilder(
-            /* url = */ data.url.toString(),
-            /* callback = */ callback,
-            /* executor = */ executor,
-        ).apply {
-            setHttpMethod(data.method.value)
-
-            data.headers.flattenForEach { key, value ->
-                addHeader(key, value)
-            }
-
-            data.body.toUploadDataProvider()?.let {
-                setUploadDataProvider(it, executor)
-            }
-
-            data.body.contentType?.let {
-                addHeader(HttpHeaders.ContentType, "${it.contentType}/${it.contentSubtype}")
-            }
-        }.build()
-
-        request.start()
-
-        continuation.invokeOnCancellation {
-            request.cancel()
+            request.start()
         }
     }
 }
@@ -152,7 +161,6 @@ private fun UrlResponseInfo.toHttpResponseData(
     callContext: CoroutineContext,
     responseBody: ByteArray? = null,
 ): HttpResponseData {
-    Log.v("CronetEngine", "protocol: $negotiatedProtocol")
     return HttpResponseData(
         statusCode = HttpStatusCode.fromValue(httpStatusCode),
         requestTime = requestTime,
@@ -172,15 +180,30 @@ private fun UrlResponseInfo.toHttpResponseData(
     )
 }
 
-private fun OutgoingContent.toUploadDataProvider(): UploadDataProvider? {
-    return when (this) {
+private suspend fun OutgoingContent.toUploadDataProvider(): UploadDataProvider? {
+    return when (val outgoingContent = this) {
         is OutgoingContent.NoContent -> null
+
+        is OutgoingContent.ContentWrapper -> outgoingContent.delegate().toUploadDataProvider()
+
         is OutgoingContent.ByteArrayContent -> {
-            UploadDataProviders.create(bytes())
+            UploadDataProviders.create(outgoingContent.bytes())
         }
 
-        is OutgoingContent.ReadChannelContent,
-        is OutgoingContent.WriteChannelContent,
+        is OutgoingContent.ReadChannelContent -> {
+            UploadDataProviders.create(outgoingContent.readFrom().toByteArray())
+        }
+
+        is OutgoingContent.WriteChannelContent -> coroutineScope {
+            UploadDataProviders.create(toReadChannel(outgoingContent).toByteArray())
+        }
+
         is OutgoingContent.ProtocolUpgrade -> error("UnsupportedContentType $this")
     }
+}
+
+private fun CoroutineScope.toReadChannel(content: OutgoingContent.WriteChannelContent): ByteReadChannel {
+    return writer(Dispatchers.IO) {
+        content.writeTo(channel)
+    }.channel
 }
