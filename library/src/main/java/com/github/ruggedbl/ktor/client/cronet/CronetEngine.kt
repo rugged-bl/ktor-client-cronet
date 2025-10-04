@@ -124,7 +124,7 @@ class CronetEngine internal constructor(
                     info: UrlResponseInfo?,
                     error: CronetException
                 ) {
-                    continuation.resumeWithException(error)
+                    continuation.resumeWithException(error.fillInStackTrace())
                 }
 
                 override fun onCanceled(request: UrlRequest, info: UrlResponseInfo?) {
