@@ -3,15 +3,16 @@ package com.github.ruggedbl.ktor.client.cronet
 import io.ktor.client.engine.HttpClientEngineBase
 import io.ktor.client.engine.HttpClientEngineCapability
 import io.ktor.client.engine.callContext
-import io.ktor.client.network.sockets.ConnectTimeoutException
-import io.ktor.client.plugins.HttpTimeoutCapability
 import io.ktor.client.request.HttpRequestData
 import io.ktor.client.request.HttpResponseData
+import io.ktor.client.utils.dropCompressionHeaders
 import io.ktor.http.Headers
 import io.ktor.http.HttpHeaders
+import io.ktor.http.HttpMethod
 import io.ktor.http.HttpProtocolVersion
 import io.ktor.http.HttpStatusCode
 import io.ktor.http.content.OutgoingContent
+import io.ktor.util.Attributes
 import io.ktor.util.date.GMTDate
 import io.ktor.util.flattenForEach
 import io.ktor.utils.io.ByteReadChannel
@@ -30,18 +31,17 @@ import org.chromium.net.UrlRequest
 import org.chromium.net.UrlResponseInfo
 import org.chromium.net.apihelpers.UploadDataProviders
 import java.io.ByteArrayOutputStream
-import java.io.IOException
 import java.nio.ByteBuffer
 import java.nio.channels.Channels
 import kotlin.coroutines.CoroutineContext
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 
-class CronetEngine(
+class CronetEngine internal constructor(
     override val config: CronetConfig,
 ) : HttpClientEngineBase("ktor-cronet") {
 
-    override val supportedCapabilities = hashSetOf(HttpTimeoutCapability)
+    override val supportedCapabilities: Set<HttpClientEngineCapability<*>> = emptySet()
 
     private val cronetEngine = config.preconfigured
 
@@ -79,8 +79,11 @@ class CronetEngine(
                         request.cancel()
                         continuation.resume(
                             info.toHttpResponseData(
+                                method = data.method,
+                                attributes = data.attributes,
                                 requestTime = requestTime,
                                 callContext = callContext,
+                                responseBody = ByteReadChannel.Empty,
                             )
                         )
                     }
@@ -107,9 +110,11 @@ class CronetEngine(
                 override fun onSucceeded(request: UrlRequest, info: UrlResponseInfo) {
                     continuation.resume(
                         info.toHttpResponseData(
+                            method = data.method,
+                            attributes = data.attributes,
                             requestTime = requestTime,
                             callContext = callContext,
-                            responseBody = responseCache.toByteArray(),
+                            responseBody = ByteReadChannel(responseCache.toByteArray()),
                         )
                     )
                 }
@@ -127,25 +132,7 @@ class CronetEngine(
                 }
             }
 
-            val request = cronetEngine.newUrlRequestBuilder(
-                /* url = */ data.url.toString(),
-                /* callback = */ callback,
-                /* executor = */ executor,
-            ).apply {
-                setHttpMethod(data.method.value)
-
-                data.headers.flattenForEach { key, value ->
-                    addHeader(key, value)
-                }
-
-                uploadDataProvider?.let {
-                    setUploadDataProvider(it, executor)
-                }
-
-                data.body.contentType?.let {
-                    addHeader(HttpHeaders.ContentType, "${it.contentType}/${it.contentSubtype}")
-                }
-            }.build()
+            val request = buildUrlRequest(data, callback, uploadDataProvider)
 
             continuation.invokeOnCancellation {
                 request.cancel()
@@ -154,28 +141,58 @@ class CronetEngine(
             request.start()
         }
     }
+
+    private fun buildUrlRequest(
+        data: HttpRequestData,
+        callback: UrlRequest.Callback,
+        uploadDataProvider: UploadDataProvider?
+    ): UrlRequest {
+        return cronetEngine.newUrlRequestBuilder(
+            /* url = */ data.url.toString(),
+            /* callback = */ callback,
+            /* executor = */ executor,
+        ).apply {
+            setHttpMethod(data.method.value)
+
+            data.headers.flattenForEach { key, value ->
+                addHeader(key, value)
+            }
+
+            uploadDataProvider?.let {
+                setUploadDataProvider(it, executor)
+            }
+
+            data.body.contentType?.let {
+                addHeader(HttpHeaders.ContentType, "${it.contentType}/${it.contentSubtype}")
+            }
+        }.build()
+    }
 }
 
+@OptIn(InternalAPI::class)
 private fun UrlResponseInfo.toHttpResponseData(
+    method: HttpMethod,
+    attributes: Attributes,
     requestTime: GMTDate,
     callContext: CoroutineContext,
-    responseBody: ByteArray? = null,
+    responseBody: ByteReadChannel,
 ): HttpResponseData {
     return HttpResponseData(
         statusCode = HttpStatusCode.fromValue(httpStatusCode),
         requestTime = requestTime,
         headers = Headers.build {
-            allHeaders.forEach { (key, value) ->
-                appendAll(key, value)
+            allHeaders.forEach { (key, values) ->
+                appendAll(key, values)
             }
+            dropCompressionHeaders(method, attributes)
         },
         version = when (negotiatedProtocol) {
             "h2" -> HttpProtocolVersion.HTTP_2_0
-            "h3" -> HttpProtocolVersion.QUIC
+            "h3" -> HttpProtocolVersion.HTTP_3_0
             "quic/1+spdy/3" -> HttpProtocolVersion.SPDY_3
             else -> HttpProtocolVersion.HTTP_1_1
         },
-        body = responseBody?.let { ByteReadChannel(it) } ?: ByteReadChannel.Empty,
+        body = responseBody,
         callContext = callContext,
     )
 }

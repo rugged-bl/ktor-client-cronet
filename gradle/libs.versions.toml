@@ -1,13 +1,13 @@
 [versions]
-agp = "8.5.2"
-kotlin = "2.0.21"
-cronet = "119.6045.31"
-ktor = "3.0.1"
+agp = "8.13.0"
+kotlin = "2.2.20"
+cronet = "141.7340.3"
+ktor = "3.3.0"
 
-coreKtx = "1.13.1"
-appcompat = "1.7.0"
-activity = "1.9.3"
-material = "1.12.0"
+coreKtx = "1.17.0"
+appcompat = "1.7.1"
+activity = "1.11.0"
+material = "1.13.0"
 
 [libraries]
 cronet = { group = "org.chromium.net", name = "cronet-embedded", version.ref = "cronet" }
@@ -26,5 +26,5 @@ material = { group = "com.google.android.material", name = "material", version.r
 android-application = { id = "com.android.application", version.ref = "agp" }
 jetbrains-kotlin-android = { id = "org.jetbrains.kotlin.android", version.ref = "kotlin" }
 android-library = { id = "com.android.library", version.ref = "agp" }
-kotlin-serialization = { id = "org.jetbrains.kotlin.plugin.serialization", version = "2.0.21" }
+kotlin-serialization = { id = "org.jetbrains.kotlin.plugin.serialization", version = "2.2.20" }
 

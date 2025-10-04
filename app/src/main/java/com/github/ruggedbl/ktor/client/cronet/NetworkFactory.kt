@@ -17,7 +17,6 @@ import io.ktor.client.request.get
 import io.ktor.client.request.post
 import io.ktor.client.request.setBody
 import io.ktor.client.statement.bodyAsBytes
-import io.ktor.client.statement.readBytes
 import io.ktor.http.ContentType
 import io.ktor.http.contentType
 import io.ktor.serialization.kotlinx.json.json
@@ -35,7 +34,7 @@ class NetworkFactory {
     fun sendTest(context: Context) {
         GlobalScope.launch(Dispatchers.IO) {
             val client = NetworkFactory().createHttpClient(context)
-            val a = client.get("https://quic.nginx.org/test")
+            val a = client.get("https://www.google.com/favicon.ico")
             a.bodyAsBytes()
 
             delay(100)
@@ -48,9 +47,6 @@ class NetworkFactory {
             }
 
             delay(100)
-
-            val c = client.get("https://www.google.com/favicon.ico")
-            c.bodyAsBytes()
 
             val postResponse = client.post("https://jsonplaceholder.typicode.com/posts") {
                 contentType(ContentType.Application.Json)
@@ -74,12 +70,14 @@ class NetworkFactory {
         }
 
         return CronetEngine.Builder(context)
+            .setStoragePath(storagePath)
             .enableHttp2(true)
             .enableQuic(true)
             .enableBrotli(true)
             .setConnectionMigrationOptions(
                 ConnectionMigrationOptions.builder()
                     .enableDefaultNetworkMigration(true)
+                    .enablePathDegradationMigration(true)
                     .build()
             )
             .setDnsOptions(
@@ -87,7 +85,6 @@ class NetworkFactory {
                     .persistHostCache(true)
                     .build()
             )
-            .setStoragePath(storagePath)
             .setUserAgent("Android/1.0")
             .build()
     }
